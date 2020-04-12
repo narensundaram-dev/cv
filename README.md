@@ -1,5 +1,5 @@
 ## Initial setup:
-- `python v3.6.9`
+- `python v3.8.2`
 - `pip install -r requirements.txt` (or) `python -m pip install -r requirements.txt`
 - `python`
 - `>> import nltk`

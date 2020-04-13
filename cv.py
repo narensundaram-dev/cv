@@ -1,7 +1,9 @@
 import os
 import re
 import glob
+import json
 import shutil
+import traceback
 import zipfile
 import logging
 import argparse
@@ -86,7 +88,7 @@ class CVReader(object):
             tokens = dummy
             return tokens, lines, sentences
         except Exception as e:
-            log.error("Error on tokenizing the ")
+            log.error("Error on tokenizing.")
 
     def extract_name(self):
         name = ""
@@ -96,70 +98,104 @@ class CVReader(object):
             tokens, lines, sentences = self.tokenize()
             grammar = r'NAME: {<NN.*><NN.*><NN.*>*}'
             parser = nltk.RegexpParser(grammar)
-            all_chunked_tokens = []
+            # all_chunked_tokens = []
             for tagged_tokens in lines:
                 if len(tagged_tokens) == 0:
                     continue
                 chunked_tokens = parser.parse(tagged_tokens)
-                all_chunked_tokens.append(chunked_tokens)
+                # all_chunked_tokens.append(chunked_tokens)
                 for subtree in chunked_tokens.subtrees():
-                    if subtree.label() == 'NAME':
-                        for ind, leaf in enumerate(subtree.leaves()):
-                            if leaf[0].lower() in indian_names and 'NN' in leaf[1]:
-                                hit = " ".join([el[0] for el in subtree.leaves()[ind:ind + 3]])
-                                if re.compile(r'[\d,:]').search(hit):
-                                    continue
-                                name_hits.append(hit)
+                    # if subtree.label() == 'NAME':
+                    for idx, leaf in enumerate(subtree.leaves()):
+                        # if leaf[0].lower() in indian_names and 'NN' in leaf[1]:
+                        # print("leaf: ", leaf)
+                        if leaf[0].lower() in indian_names:
+                            hit = " ".join([el[0] for el in subtree.leaves()[idx:idx + 3]])
+                            if re.compile(r'[\d,:]').search(hit):
+                                continue
+                            name_hits.append(hit)
                 if len(name_hits) > 0:
                     name_hits = [re.sub(r'[^a-zA-Z \-]', '', el).strip() for el in name_hits]
                     name = " ".join([el[0].upper() + el[1:].lower() for el in name_hits[0].split() if len(el) > 0])
                     other_name_hits = name_hits[1:]
 
-        except Exception as e:
+        except BaseException as e:
             log.error("Error getting the name from the document.")
             return "", []
 
-        name = " ".join(name.split(" ")[:2]) if len(name.split(" ")) >= 2 else name
+        names = [None] * 3
+        name = name.replace(".", " ")
+        name = name.split(" ")[:3] if len(name.split(" ")) >= 3 else name.split(" ")
+        for i, n in enumerate(name):
+            names[i] = n
         other_name_hits = other_name_hits[:5] if len(other_name_hits) >= 5 else other_name_hits
-        return name, other_name_hits
+        return names, other_name_hits
 
     def extract_mobile(self):
         mobiles = set()
         pattern_mobile = [
+            # r"(\+91-)?(\+91)?(-\s)?([0-9]{2,4}).?([0-9]{2,4}).?([0-9]{2,4})",
             r"(\+91-)?(\+91)?(-\s)?([0-9]{3}).?([0-9]{3}).?([0-9]{4})",
-            r"(\+91-)?(\+91)?(-\s)?([0-9]{4}).?([0-9]{3}).?([0-9]{3})"
+            r"(\+91-)?(\+91)?(-\s)?([0-9]{4}).?([0-9]{3}).?([0-9]{3})",
+            r"(\+91-)?(\+91)?(-\s)?([0-9]{3}).?([0-9]{4}).?([0-9]{3})",
+            r"(\+91-)?(\+91)?(-\s)?([0-9]{4}).?([0-9]{2}).?([0-9]{4})",
         ]
         for pattern in pattern_mobile:
             matches = re.finditer(pattern, self.text, re.MULTILINE)
             for match in matches:
                 mobiles.add(match.group())
-        return ", ".join(list(mobiles))
+        return self.normalize_mobile_numbers(mobiles)
 
     def extract_email(self):
+        email_ids = [None] * 2
         emails = set()
         pattern_email = r"([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)"
         matches = re.finditer(pattern_email, self.text, re.MULTILINE)
         for match in matches:
             emails.add(match.group().lower())
         emails = list(filter(lambda x: x.split(".")[-1] in ("com", "co", "in", "org"), list(emails)))
-        return ", ".join(emails)
+        emails = emails[:2] if len(emails) >= 2 else emails
+        emails = list(set(emails))
+        for idx, email in enumerate(emails):
+            email_ids[idx] = email
+        return email_ids
 
     def extract(self, text):
-        self.text = text
+        self.text = text.strip()
 
         txt_file_path = self.filename.replace(self.extension, "txt")
         path = os.path.join(CVManager.path_txt_files, txt_file_path)
         with open(path, "w+") as f:
             f.write(self.text.encode("ascii", "ignore").decode("ascii", "ignore"))
 
-        name, others = self.extract_name()
+        names, others = self.extract_name()
+        fname, mname, lname = names[0], names[1], names[2]
+        mobile1, mobile2 = self.extract_mobile()
+        email1, email2 = self.extract_email()
         return {
             "file_name": self.initial_filename,
-            "name": name,
-            "mobile": self.extract_mobile(),
-            "email": self.extract_email(),
+            "first_name": fname,
+            "middle_name": mname,
+            "last_name": lname,
+            "mobile1": mobile1,
+            "mobile2": mobile2,
+            "email1": email1,
+            "email2": email2,
             "name_hints": ", ".join(others)
         }
+
+    @classmethod
+    def normalize_mobile_numbers(cls, mobiles):
+        mobile_numbers = [None] * 2
+        mobiles = list(mobiles)[:2] if len(mobiles) >= 2 else list(mobiles)
+        for idx, mobile in enumerate(mobiles):
+            norm_mobile = mobile.replace("+91", "").replace(" ", "")
+            mobiles[idx] = int(re.sub(r"\D", "", norm_mobile))
+        mobiles = list(map(lambda x: int(x), [n for n in map(lambda x: str(x), mobiles) if len(n) == 10]))
+        mobiles = list(set(mobiles))
+        for idx, number in enumerate(mobiles):
+            mobile_numbers[idx] = number
+        return mobile_numbers
 
     def doc2docx(self):
         filename = os.path.split(self.path)[-1]
@@ -234,6 +270,7 @@ class CVReader(object):
                     self.path, ", ".join(CVReader.docs_supported)))
                 return {}
         except Exception as err:
+            log.debug(traceback.format_exc())
             log.error("Error reading the file: {}. Please contact developer to fix it.".format(self.filename))
 
 
@@ -253,7 +290,7 @@ class CVManager(object):
 
     @classmethod
     def cleanup(cls):
-        shutil.rmtree(CVManager.path_txt_files, ignore_errors=True)
+        # shutil.rmtree(CVManager.path_txt_files, ignore_errors=True)
         shutil.rmtree(CVManager.path_doc2docx_files, ignore_errors=True)
 
     def get(self):
@@ -262,7 +299,8 @@ class CVManager(object):
         paths = list(filter(lambda x: "~$" not in x, paths_all))
 
         for path in paths:
-            data = CVReader(path).read()  # returns {"file_name": "", "name": "", "mobile": "", "email": ""}
+            data = CVReader(path).read()
+            log.debug("Fetched data: \n{}".format(json.dumps(data, indent=4)))
             if data:
                 self.data.append(data)
         return self

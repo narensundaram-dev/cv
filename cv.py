@@ -108,19 +108,20 @@ class CVReader(object):
             for tagged_tokens in lines:
                 if len(tagged_tokens) == 0:
                     continue
+                if len(name_hits) >= 5:
+                    break
+
                 tokens_chunked = parser.parse(tagged_tokens)
                 for subtree in tokens_chunked.subtrees():
                     # if subtree.label() == 'NAME':
                     for idx, leaf in enumerate(subtree.leaves()):
-                        # if leaf[0].lower() in indian_names and 'NN' in leaf[1]:
-                        # print("leaf: ", leaf)
-                        if leaf[0].lower() in indian_names:
+                        if leaf[0].lower().split(".")[0] in indian_names:
                             hit = " ".join([el[0] for el in subtree.leaves()[idx:idx + 3]])
                             if re.compile(r'[\d,:]').search(hit):
                                 continue
                             name_hits.append(hit)
                 if len(name_hits) > 0:
-                    name_hits = [re.sub(r'[^a-zA-Z \-]', '', el).strip() for el in name_hits]
+                    name_hits = [re.sub(r'[^a-zA-Z \-]', ' ', el).strip() for el in name_hits]
                     name = " ".join([el[0].upper() + el[1:].lower() for el in name_hits[0].split() if len(el) > 0])
                     other_name_hits = name_hits[1:]
 
@@ -138,19 +139,22 @@ class CVReader(object):
         return names, other_name_hits
 
     def extract_mobile(self):
-        mobiles = set()
+        matches = []
         pattern_mobile = [
-            # r"(\+91-)?(\+91)?(-\s)?([0-9]{2,4}).?([0-9]{2,4}).?([0-9]{2,4})",
+            # r"^.*(\+91-)?(\+91)?(-\s)?([0-9]{2,}).?([0-9]{2,}).?([0-9]{2,}).?([0-9]{2,})",
             r"(\+91-)?(\+91)?(-\s)?([0-9]{3}).?([0-9]{3}).?([0-9]{4})",
             r"(\+91-)?(\+91)?(-\s)?([0-9]{4}).?([0-9]{3}).?([0-9]{3})",
             r"(\+91-)?(\+91)?(-\s)?([0-9]{3}).?([0-9]{4}).?([0-9]{3})",
             r"(\+91-)?(\+91)?(-\s)?([0-9]{4}).?([0-9]{2}).?([0-9]{4})",
-            r"(\+91-)?(\+91)?(-\s)?([0-9]{5}).?([0-9]{5})"
+            r"(\+91-)?(\+91)?(-\s)?([0-9]{5}).?([0-9]{5})",
+            r"(\+91-)?(\+91)?(-\s)?([0-9]{10})"
         ]
         for pattern in pattern_mobile:
-            matches = re.finditer(pattern, self.text, re.MULTILINE)
-            for match in matches:
-                mobiles.add(match.group())
+            matches.extend(re.finditer(pattern, self.text, re.MULTILINE))
+        matches = sorted(matches, key=lambda match: match.span()[0])
+        mobiles = [match.group() for match in matches]
+        mobiles_uniq = set()
+        mobiles = [x for x in mobiles if not (x in mobiles_uniq or mobiles_uniq.add(x))]
         return self.normalize_mobile_numbers(mobiles)
 
     def extract_email(self):
@@ -195,18 +199,19 @@ class CVReader(object):
 
     @classmethod
     def normalize_mobile_numbers(cls, mobiles):
-        mobile_numbers = [None] * 2
-        mobiles = list(mobiles)[:2] if len(mobiles) >= 2 else list(mobiles)
+        mobiles = list(map(lambda mob: re.sub(r"\D", "", mob), mobiles))
+        mobile_numbers_limit = [None] * 2
+        mobile_numbers = []
         for idx, mobile in enumerate(mobiles):
             norm_mobile = mobile.replace("+91", "").replace(" ", "")
-            norm_mobile = re.sub(r"\D", "", norm_mobile)
-            if norm_mobile[0] in "06789":
-                mobiles[idx] = int(norm_mobile)
-        mobiles = list(map(lambda x: int(x), [n for n in map(lambda x: str(x), mobiles) if len(n) == 10]))
-        mobiles = list(set(mobiles))
-        for idx, number in enumerate(mobiles):
-            mobile_numbers[idx] = number
-        return mobile_numbers
+            if norm_mobile.startswith("91") and len(norm_mobile) > 10:
+                norm_mobile = norm_mobile.replace("91", "", 1)
+            if norm_mobile[0] in "6789" and len(norm_mobile) == 10:
+                mobile_numbers.append(int(norm_mobile))
+        mobile_numbers = list(mobile_numbers)[:2] if len(mobile_numbers) >= 2 else list(mobile_numbers)
+        for idx, mobile_number in enumerate(mobile_numbers):
+            mobile_numbers_limit[idx] = mobile_number
+        return mobile_numbers_limit
 
     def doc2docx(self):
         filename = os.path.split(self.path)[-1]
@@ -310,17 +315,17 @@ class CVManager(object):
     def filename(cls, path):
         return os.path.split(path)[-1]
 
-    @classmethod
-    def setup(cls):
+    def setup(self):
+        cls = CVManager
         os.makedirs(cls.path_txt_files, exist_ok=True)
         os.makedirs(cls.path_doc2docx_files, exist_ok=True)
         os.makedirs(cls.path_unread_files, exist_ok=True)
         os.makedirs(cls.path_unread_debug_files, exist_ok=True)
 
-    @classmethod
-    def cleanup(cls):
-        shutil.rmtree(CVManager.path_txt_files, ignore_errors=True)
-        shutil.rmtree(CVManager.path_doc2docx_files, ignore_errors=True)
+    def cleanup(self, force=False):
+        if self.args.cleanup or force:
+            shutil.rmtree(CVManager.path_txt_files, ignore_errors=True)
+            shutil.rmtree(CVManager.path_doc2docx_files, ignore_errors=True)
 
     @classmethod
     def valid(cls, data):
@@ -394,6 +399,8 @@ def get_args():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('-f', '--destination', type=str,
                             help='Enter the folder path where you want to save the file.')
+    arg_parser.add_argument('--cleanup', '--cleanup', type=bool, default=False,
+                            help='Cleanup the unwanted dirs after the script is done.')
     arg_parser.add_argument('-log-level', '--log_level', type=str, choices=("INFO", "DEBUG"),
                             default="INFO", help='Where do you want to post the info?')
     return arg_parser.parse_args()
@@ -406,8 +413,9 @@ def main():
     start = dt.now().strftime("%d-%m-%Y %H:%M:%S %p")
     log.info("Script starts at: {}".format(start))
 
-    CVManager.setup()
     manager = CVManager(args)
+    manager.cleanup(force=True)  # Cleanup the path before the script starts
+    manager.setup()
     try:
         manager.get()
     except BaseException as err:
@@ -415,7 +423,7 @@ def main():
     finally:
         manager.save()
     manager.conclude()
-    CVManager.cleanup()
+    manager.cleanup()
 
     end = dt.now().strftime("%d-%m-%Y %H:%M:%S %p")
     log.info("Script ends at: {}".format(end))

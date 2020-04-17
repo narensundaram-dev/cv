@@ -1,3 +1,8 @@
+__author__ = "Narendran G"
+__maintainer__ = "Narendran G"
+__email__ = "narensundaram007@gmail.com"
+__mobile__ = "+91-8678910063"
+
 import os
 import re
 import glob
@@ -22,10 +27,6 @@ from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
 
 from utils.email_normalizer import EmailNormalizer
 
-
-__author__ = "Narendran G"
-__maintainer__ = "Narendran G"
-__contact__ = "narensundaram007@gmail.com / +91 8678910063"
 
 log = logging.getLogger(__file__.split('/')[-1])
 
@@ -58,10 +59,11 @@ class CVReader(object):
     __doc, __docx, __pdf = "doc", "docx", "pdf"
     docs_supported = (__doc, __docx, __pdf)
 
-    def __init__(self, path):
+    def __init__(self, path, settings):
         self.cwd = CVReader.cwd
         self.initial_path = path
         self.path = path
+        self.settings = settings
         self.text = ""
         self.text_path = ""
         self.data = {}
@@ -79,6 +81,16 @@ class CVReader(object):
     def extension(self):
         return self.filename.split(".")[-1]
 
+    @property
+    def text_trunc(self):
+        matches = []
+        targets = self.settings["keywords"]["reference"]["targets"]
+        for target in targets:
+            pattern = r"(\s|\n){1,}" + target + r"(\s|\W|\n)"
+            matches.extend(re.finditer(pattern, self.text, re.MULTILINE))
+        pos = sorted(map(lambda match: match.span()[0], matches))
+        return self.text[:pos[0]] if pos else self.text
+
     def tokenize(self):
         try:
             text = self.text.encode('ascii', 'ignore').decode("ascii", "ignore")
@@ -94,7 +106,7 @@ class CVReader(object):
                 dummy += el
             tokens = dummy
             return tokens, lines, sentences
-        except Exception as e:
+        except BaseException as e:
             log.error("Error on tokenizing.")
 
     def extract_name(self):
@@ -134,23 +146,16 @@ class CVReader(object):
         name = name.split(" ")[:3] if len(name.split(" ")) >= 3 else name.split(" ")
         for i, n in enumerate(name):
             if len(n) <= 2 or n.lower() in indian_names:
-                names[i] = n
+                names[i] = n.title()
         other_name_hits = other_name_hits[:5] if len(other_name_hits) >= 5 else other_name_hits
         return names, other_name_hits
 
     def extract_mobile(self):
         matches = []
-        pattern_mobile = [
-            # r"^.*(\+91-)?(\+91)?(-\s)?([0-9]{2,}).?([0-9]{2,}).?([0-9]{2,}).?([0-9]{2,})",
-            r"(\+91-)?(\+91)?(-\s)?([0-9]{3}).?([0-9]{3}).?([0-9]{4})",
-            r"(\+91-)?(\+91)?(-\s)?([0-9]{4}).?([0-9]{3}).?([0-9]{3})",
-            r"(\+91-)?(\+91)?(-\s)?([0-9]{3}).?([0-9]{4}).?([0-9]{3})",
-            r"(\+91-)?(\+91)?(-\s)?([0-9]{4}).?([0-9]{2}).?([0-9]{4})",
-            r"(\+91-)?(\+91)?(-\s)?([0-9]{5}).?([0-9]{5})",
-            r"(\+91-)?(\+91)?(-\s)?([0-9]{10})"
-        ]
+        # r"^.*(\+91-)?(\+91)?(-\s)?([0-9]{2,}).?([0-9]{2,}).?([0-9]{2,}).?([0-9]{2,})"
+        pattern_mobile = map(lambda x: r"{}".format(x), self.settings["regex_mobile"])
         for pattern in pattern_mobile:
-            matches.extend(re.finditer(pattern, self.text, re.MULTILINE))
+            matches.extend(re.finditer(pattern, self.text_trunc, re.MULTILINE))
         matches = sorted(matches, key=lambda match: match.span()[0])
         mobiles = [match.group() for match in matches]
         mobiles_uniq = set()
@@ -160,8 +165,12 @@ class CVReader(object):
     def extract_email(self):
         email_ids = [None] * 2
         emails = set()
-        pattern_email = r"([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)"
-        matches = re.finditer(pattern_email, self.text, re.MULTILINE)
+
+        matches = []
+        pattern_email = map(lambda x: r"{}".format(x), self.settings["regex_email"])
+        for pattern in pattern_email:
+            matches.extend(re.finditer(pattern, self.text_trunc, re.MULTILINE))
+
         for match in matches:
             email = EmailNormalizer(match.group().lower()).normalize()
             emails.add(email)
@@ -173,8 +182,7 @@ class CVReader(object):
         return email_ids
 
     def extract(self, text):
-        self.text = text.strip()
-
+        self.text = text.lower().strip()
         txt_file_path = self.filename.replace(self.extension, "txt")
         path = os.path.join(CVManager.path_txt_files, txt_file_path)
         with open(path, "w+") as f:
@@ -193,8 +201,7 @@ class CVReader(object):
             "mobile1": mobile1,
             "mobile2": mobile2,
             "email1": email1,
-            "email2": email2,
-            # "name_hints": ", ".join(others)
+            "email2": email2
         }
 
     @classmethod
@@ -208,6 +215,9 @@ class CVReader(object):
                 norm_mobile = norm_mobile.replace("91", "", 1)
             if norm_mobile[0] in "6789" and len(norm_mobile) == 10:
                 mobile_numbers.append(int(norm_mobile))
+            elif norm_mobile.startswith("0") and len(norm_mobile) == 11:
+                mobile_numbers.append(int(norm_mobile[1:]))
+
         mobile_numbers = list(mobile_numbers)[:2] if len(mobile_numbers) >= 2 else list(mobile_numbers)
         for idx, mobile_number in enumerate(mobile_numbers):
             mobile_numbers_limit[idx] = mobile_number
@@ -259,6 +269,10 @@ class CVReader(object):
         return self.extract(text)
 
     def read_pdf(self):
+        """
+        Reference: https://stackoverflow.com/a/26495057
+        :return:
+        """
         log.info("Reading: {}".format(self.initial_path))
         manager = PDFResourceManager()
         layout = LAParams(all_texts=True)
@@ -285,7 +299,7 @@ class CVReader(object):
             else:
                 self.skip = True
             self.data = data
-        except Exception as err:
+        except BaseException as err:
             log.debug(traceback.format_exc())
             log.error("Error reading the file: {}. Please contact developer to fix it.".format(self.filename))
         finally:
@@ -300,8 +314,9 @@ class CVManager(object):
     path_unread_files = os.path.join(output_folder, "resumes_unread")
     path_unread_debug_files = os.path.join(path_unread_files, "debug")
 
-    def __init__(self, args):
+    def __init__(self, args, settings):
         self.args = args
+        self.settings = settings
         self.data = []
         self.data_unread = []
         self.stats = {
@@ -327,6 +342,9 @@ class CVManager(object):
             shutil.rmtree(CVManager.path_txt_files, ignore_errors=True)
             shutil.rmtree(CVManager.path_doc2docx_files, ignore_errors=True)
 
+    def flush(self):
+        shutil.rmtree(CVManager.output_folder, ignore_errors=True)
+
     @classmethod
     def valid(cls, data):
         if not data["first_name"]:
@@ -344,7 +362,7 @@ class CVManager(object):
 
         self.stats["total"].extend(paths)
         for path in paths:
-            reader = CVReader(path).read()
+            reader = CVReader(path, settings=self.settings).read()
             if reader.skip:
                 self.stats["skip"].append(path)
                 continue
@@ -395,11 +413,16 @@ class CVManager(object):
         """.format(len(total), len(skip), len(read), len(unread), percent))
 
 
+def get_settings():
+    with open("settings.json", "r") as settings:
+        return json.load(settings)
+
+
 def get_args():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument('-f', '--destination', type=str,
                             help='Enter the folder path where you want to save the file.')
-    arg_parser.add_argument('--cleanup', '--cleanup', type=bool, default=False,
+    arg_parser.add_argument('--cleanup', '--cleanup', default=False, action="store_true",
                             help='Cleanup the unwanted dirs after the script is done.')
     arg_parser.add_argument('-log-level', '--log_level', type=str, choices=("INFO", "DEBUG"),
                             default="INFO", help='Where do you want to post the info?')
@@ -409,12 +432,13 @@ def get_args():
 def main():
     args = get_args()
     config_logger(args)
+    settings = get_settings()
 
     start = dt.now().strftime("%d-%m-%Y %H:%M:%S %p")
     log.info("Script starts at: {}".format(start))
 
-    manager = CVManager(args)
-    manager.cleanup(force=True)  # Cleanup the path before the script starts
+    manager = CVManager(args, settings)
+    manager.flush()  # Flush the output folder before the script starts
     manager.setup()
     try:
         manager.get()

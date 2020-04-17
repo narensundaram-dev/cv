@@ -7,5 +7,6 @@
 - `>> nltk.download('averaged_perceptron_tagger')`
 
 ## How to run:
-- `python cv.py -f "/path/to/resume/folder"`
+- `-f "C:\Users\ngnanasu\projects\cv\dumps\test" -log-level INFO --cleanup`
+- `output\cv_info.xlsx` will be the result.
 - `python cv.py -h`, for help. 

@@ -16,7 +16,7 @@ class EmailNormalizer(object):
         if return_:
             return new_string[::-1]
         self.email = new_string[::-1]
-        return self.trim(True)
+        return self.trim(return_=True)
 
     def normalize(self):
         return self.trim()
